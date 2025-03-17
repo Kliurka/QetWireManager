@@ -1,0 +1,611 @@
+"""
+    This Freecad script will allow you to import wires(conductors)
+    from Qelectrotech and manage it in 3d space and get wires length.
+    https://github.com/Kliurka/QetWireManager
+
+    Copyright 2025 Kliurka
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+"""
+__author__ = "Kliurka"
+__copyright__ = "2025 Kliurka"
+__license__ = "Apache 2.0"
+
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import Draft
+from PySide2 import QtGui, QtWidgets
+import xml.etree.ElementTree as ET
+import csv
+import os
+import random
+import string
+
+
+def generate_unique_code(length=6):
+    """Generate a unique code consisting of uppercase letters and digits."""
+    characters = string.ascii_uppercase + string.digits  # A-Z and 0-9
+    return ''.join(random.choice(characters) for _ in range(length))
+
+
+def import_wires_from_qet():
+    """Import wire data from a QET file and create a spreadsheet in FreeCAD."""
+    # Open the file selection dialog
+    input_file, _ = QtWidgets.QFileDialog.getOpenFileName(None, "Select QET File", "", "QET Files (*.qet)")
+    if not input_file:
+        print("No file selected")
+        return
+
+    # Read the XML file
+    try:
+        tree = ET.parse(input_file)
+        root = tree.getroot()
+    except ET.ParseError as e:
+        QtWidgets.QMessageBox.critical(None, "Error", f"Failed to read QET file: {str(e)}")
+        return
+
+    # Find all 'conductor' elements
+    conductors = root.findall(".//conductor")
+    if not conductors:
+        QtWidgets.QMessageBox.warning(None, "Warning", "No wire data found in the QET file.")
+        return
+
+    # Create a new spreadsheet in the FreeCAD document
+    doc = App.ActiveDocument
+    if not doc:
+        doc = App.newDocument()
+
+    # Set the spreadsheet name based on the QET file name
+    file_name = os.path.splitext(os.path.basename(input_file))[0]  # Get the file name without extension
+    spreadsheet = doc.addObject("Spreadsheet::Sheet", file_name)
+    spreadsheet.Label = file_name  # Set the spreadsheet's "Label" value
+
+    # Write the header
+    spreadsheet.set("A1", "Wire ID")
+    spreadsheet.set("B1", "From Ref")
+    spreadsheet.set("C1", "From Pin")
+    spreadsheet.set("D1", "To Ref")
+    spreadsheet.set("E1", "To Pin")
+    spreadsheet.set("F1", "Area")
+    spreadsheet.set("G1", "Color")
+    spreadsheet.set("H1", "Wire Length")
+    spreadsheet.set("I1", "Unique Code")
+    spreadsheet.set("J1", "Cable")
+
+    # Write the data to the spreadsheet
+    for row, conductor in enumerate(conductors, start=2):
+        wire_id = conductor.get("num", "")
+
+        # Check if 'element1_linked' exists and is not empty
+        element1_linked = conductor.get("element1_linked", "")
+        if element1_linked:
+            from_ref = element1_linked
+        else:
+            from_ref = conductor.get("element1_label", "")
+
+        from_pin = conductor.get("terminalname1", "")
+
+        # Check if 'element2_linked' exists and is not empty
+        element2_linked = conductor.get("element2_linked", "")
+        if element2_linked:
+            to_ref = element2_linked
+        else:
+            to_ref = conductor.get("element2_label", "")
+
+        to_pin = conductor.get("terminalname2", "")
+        area = conductor.get("conductor_section", "")
+        color = conductor.get("conductor_color", "")
+
+        spreadsheet.set(f"A{row}", wire_id)
+        spreadsheet.set(f"B{row}", from_ref)
+        spreadsheet.set(f"C{row}", from_pin)
+        spreadsheet.set(f"D{row}", to_ref)
+        spreadsheet.set(f"E{row}", to_pin)
+        spreadsheet.set(f"F{row}", area)
+        spreadsheet.set(f"G{row}", color)
+
+    # Recompute the document to show the result
+    doc.recompute()
+    print(f"Spreadsheet created from QET file: {input_file}")
+
+
+
+
+def check_duplicate_labels():
+    """
+    Check if 'DuplicateLabels' is enabled in FreeCAD settings.
+    If not, show a dialog to allow the user to enable it or cancel the script.
+    """
+    # Get the current value of 'DuplicateLabels'
+    duplicate_labels = App.ParamGet("User parameter:BaseApp/Preferences/Document").GetBool('DuplicateLabels')
+
+    if duplicate_labels:
+        print("DuplicateLabels is OK")
+        return True  # Continue script execution
+    else:
+        # Create a dialog to ask the user
+        dialog = QtWidgets.QMessageBox()
+        dialog.setWindowTitle("Duplicate Labels")
+        dialog.setText("For correct working of this Macro Script, allow duplicate object labels in one document.")
+        dialog.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel)
+        dialog.button(QtWidgets.QMessageBox.Yes).setText("Allow")
+        dialog.button(QtWidgets.QMessageBox.Cancel).setText("Cancel")
+
+        # Show the dialog and wait for user input
+        result = dialog.exec_()
+
+        if result == QtWidgets.QMessageBox.Yes:
+            # Set 'DuplicateLabels' to True
+            App.ParamGet("User parameter:BaseApp/Preferences/Document").SetBool('DuplicateLabels', True)
+            print("DuplicateLabels has been enabled.")
+            return True  # Continue script execution
+        else:
+            print("Script execution canceled by the user.")
+            return False  # Stop script execution
+
+
+# Check 'DuplicateLabels' setting
+if not check_duplicate_labels():
+    # Stop script execution if the user cancels
+    raise Exception("Script execution canceled by the user.")
+
+
+def find_object_by_label(container, label):
+    """Find an object by its Label in the document or inside a Body/Group."""
+    if hasattr(container, "Objects"):  # If it's a document
+        for obj in container.Objects:
+            if obj.Label == label:
+                return obj
+            if hasattr(obj, "Group"):  # Search in groups
+                for sub_obj in obj.Group:
+                    if sub_obj.Label == label:
+                        return sub_obj
+    elif hasattr(container, "Group"):  # If it's a PartDesign.Body
+        for obj in container.Group:
+            if obj.Label == label:
+                return obj
+    return None
+
+
+def get_values_from_table():
+    """Extract values from the selected cell in the spreadsheet and generate a unique code."""
+    mw = Gui.getMainWindow()
+    view = mw.getActiveWindow()
+
+    if view and hasattr(view, "selectedCells"):
+        selected_cells = view.selectedCells()
+
+        if selected_cells:
+            selected_cell = selected_cells[0]
+            row = int(selected_cell[1:])  # Row number (e.g., 2)
+
+            sheet = view.getSheet()  # Get the active spreadsheet
+
+            if sheet:
+                values = []
+                for i in range(7):
+                    column_letter = chr(ord('A') + i)  # Column letter (e.g., A, B, C, ..., G)
+                    cell = f"{column_letter}{row}"  # Form the cell address (e.g., A2, B2, ..., G2)
+
+                    if sheet.getContents(cell):
+                        value = sheet.get(cell)
+                        if isinstance(value, str):
+                            value = value.strip()  # Remove whitespace
+                            if value.startswith("'"):
+                                value = value[1:]  # Remove single quotes
+                        values.append(value)
+                    else:
+                        print(f"Warning: Cell {cell} is empty or does not exist.")
+                        values.append("")  # If the cell is empty, assign an empty value
+
+                # Generate a unique code
+                unique_code = generate_unique_code()
+
+                # Write the unique code to the "I" column
+                cell_I = f"I{row}"
+                sheet.set(cell_I, unique_code)
+                print(f"Unique code written to cell {cell_I}: {unique_code}")
+
+                # Add the unique code to the returned values
+                values.append(unique_code)
+
+                return values
+            else:
+                print("Error: Failed to get the active spreadsheet.")
+                return None
+        else:
+            print("No cell selected.")
+            return None
+    else:
+        print("The active window is not a spreadsheet or does not support cell selection.")
+        return None
+
+
+def update_bezier(body1, sketch1, body2, sketch2, bezier):
+    """Update only the connected points of the Bézier curve based on Vertex1 positions of two bodies."""
+    print("Updating connected points of the Bézier curve...")
+
+    # Get the current points of the Bézier curve
+    current_points = bezier.Points
+
+    # Update the first point (connected to body1)
+    body1_placement = body1.Placement
+    local_vertex1 = sketch1.Shape.Vertexes[0].Point
+    global_vertex1 = body1_placement.multVec(local_vertex1)
+    current_points[0] = global_vertex1  # Update the first point
+
+    # Update the last point (connected to body2)
+    body2_placement = body2.Placement
+    local_vertex2 = sketch2.Shape.Vertexes[0].Point
+    global_vertex2 = body2_placement.multVec(local_vertex2)
+    current_points[-1] = global_vertex2  # Update the last point
+
+    # Set the updated points back to the Bézier curve
+    bezier.Points = current_points
+    bezier.touch()
+    App.ActiveDocument.recompute()
+
+    print(f"Updated connected points: {global_vertex1}, {global_vertex2}")
+
+
+def create_bezier_curve():
+    """Create a Bézier curve based on values from the spreadsheet."""
+    doc = App.ActiveDocument
+    if not doc:
+        print("No active document!")
+        return
+
+    values = get_values_from_table()
+    if not values:
+        print("Failed to get values from the spreadsheet.")
+        return
+
+    # The unique code is the last element in the list
+    unique_code = values[-1]
+
+    # Get the spreadsheet name and row number
+    mw = Gui.getMainWindow()
+    view = mw.getActiveWindow()
+
+    if view and hasattr(view, "getSheet"):
+        sheet = view.getSheet()  # Get the active spreadsheet
+        if sheet:
+            sheet_name = sheet.Name  # Spreadsheet name
+            selected_cell = view.selectedCells()[0]  # Selected cell address
+            row = int(selected_cell[1:])  # Row number (e.g., 2)
+        else:
+            print("Error: Failed to get the active spreadsheet.")
+            return
+    else:
+        print("The active window is not a spreadsheet or does not support cell selection.")
+        return
+
+    # Create an internal name using the format: sheet_name:row:unique_code
+    internal_name = f"{sheet_name}:{row}:{unique_code}"
+
+    # Convert values to strings if they are numbers
+    body1_label = str(values[1])  # Convert to string
+    sketch1_label = str(values[2])  # Convert to string
+    body2_label = str(values[3])  # Convert to string
+    sketch2_label = str(values[4])  # Convert to string
+
+    print(f"Searching for body with Label='{body1_label}'...")
+    body1 = find_object_by_label(doc, body1_label)
+    if not body1:
+        print(f"Body with Label='{body1_label}' not found!")
+        return
+
+    print(f"Searching for sketch with Label='{sketch1_label}' in body1...")
+    sketch1 = find_object_by_label(body1, sketch1_label)
+    if not sketch1:
+        print(f"Sketch with Label='{sketch1_label}' not found in body1!")
+        return
+
+    print(f"Searching for body with Label='{body2_label}'...")
+    body2 = find_object_by_label(doc, body2_label)
+    if not body2:
+        print(f"Body with Label='{body2_label}' not found!")
+        return
+
+    print(f"Searching for sketch with Label='{sketch2_label}' in body2...")
+    sketch2 = find_object_by_label(body2, sketch2_label)
+    if not sketch2:
+        print(f"Sketch with Label='{sketch2_label}' not found in body2!")
+        return
+
+    if not hasattr(sketch1, "Shape") or not sketch1.Shape.Vertexes:
+        print("Sketch A has no vertex!")
+        return
+    if not hasattr(sketch2, "Shape") or not sketch2.Shape.Vertexes:
+        print("Sketch B has no vertex!")
+        return
+
+    vertex1 = sketch1.Shape.Vertexes[0].Point
+    vertex2 = sketch2.Shape.Vertexes[0].Point
+
+    body1_placement = body1.Placement
+    body2_placement = body2.Placement
+
+    global_vertex1 = body1_placement.multVec(vertex1)
+    global_vertex2 = body2_placement.multVec(vertex2)
+
+    print(f"Global Vertex1: {global_vertex1}, Global Vertex2: {global_vertex2}")
+
+    control_point = global_vertex1.add((global_vertex2 - global_vertex1) * 0.5 + App.Vector(10, 0, 0))
+    bezier = Draft.makeBSpline([global_vertex1, control_point, global_vertex2])
+
+    # Set curve label
+    curve_label = f"{values[0]}"
+    bezier.Label = curve_label
+
+    # Set internal name using the format: sheet_name:row:unique_code
+    bezier.Label2 = internal_name  # Use the unique code for the internal name
+
+    # Set curve color
+    try:
+        # Convert hex color to RGB tuple
+        hex_color = values[6].strip()
+        if hex_color.startswith("#"):
+            hex_color = hex_color[1:]  # Remove the '#' if present
+        if len(hex_color) == 6:
+            r = int(hex_color[0:2], 16) / 255.0
+            g = int(hex_color[2:4], 16) / 255.0
+            b = int(hex_color[4:6], 16) / 255.0
+            bezier.ViewObject.LineColor = (r, g, b)  # Set as RGB tuple
+        else:
+            print(f"Invalid hex color format: {values[6]}")
+    except Exception as e:
+        print(f"Failed to set curve color: {e}")
+
+    doc.recompute()
+
+    print("Bézier curve created with internal name:", internal_name)
+
+
+def add_control_node():
+    """Add a control node between two selected points of the active curve."""
+    doc = App.ActiveDocument
+    if not doc:
+        print("No active document!")
+        return
+
+    # Get the selected object
+    selection = Gui.Selection.getSelection()
+    if not selection:
+        print("No object selected!")
+        return
+
+    selected_object = selection[0]  # Get the first selected object
+
+    # Check if the selected object is a curve (BSpline or similar)
+    if not hasattr(selected_object, "Points"):
+        print("Selected object is not a curve with editable points!")
+        return
+
+    if len(selected_object.Points) < 2:
+        print("Not enough points to add a control node!")
+        return
+
+    # Add control points
+    new_points = []
+    for i in range(len(selected_object.Points) - 1):
+        new_points.append(selected_object.Points[i])
+        mid_point = (selected_object.Points[i] + selected_object.Points[i + 1]) * 0.5
+        new_points.append(mid_point)
+    new_points.append(selected_object.Points[-1])
+
+    selected_object.Points = new_points
+    selected_object.touch()
+    doc.recompute()
+    print(f"Added control node to curve: {selected_object.Label}")
+
+
+def get_curve_length(curve):
+    """Calculate the length of a curve."""
+    if not hasattr(curve, "Shape"):
+        print("Selected object is not a valid curve!")
+        return None
+
+    try:
+        length = curve.Shape.Length
+        return length
+    except Exception as e:
+        print(f"Failed to calculate curve length: {e}")
+        return None
+
+
+def write_length_to_table(label2, length):
+    """
+    Write the length to the 'H' column of the row specified in the Label2.
+    Label2 format: sheet_name:row:unique_code
+    """
+    # Parse the Label2 value
+    try:
+        sheet_name, row, unique_code = label2.split(":")
+        row = int(row)  # Convert row to integer
+    except Exception as e:
+        print(f"Error: Failed to parse Label2 value '{label2}': {e}")
+        return
+
+    # Find the spreadsheet by name
+    doc = App.ActiveDocument
+    sheet = doc.getObject(sheet_name)
+    if not sheet or not hasattr(sheet, "getContents"):
+        print(f"Error: Spreadsheet '{sheet_name}' not found or invalid.")
+        return
+
+    # Write the length to the "H" column
+    cell_H = f"H{row}"
+    sheet.set(cell_H, str(length))  # Write the length as a string
+    sheet.recompute()
+    print(f"Length written to cell {cell_H} in spreadsheet '{sheet_name}': {length}")
+
+
+def calculate_and_write_length():
+    """Calculate the length of the selected curve and write it to the table."""
+    doc = App.ActiveDocument
+    if not doc:
+        print("No active document!")
+        return
+
+    # Get the selected object from the 3D view
+    selection = Gui.Selection.getSelection()
+    if not selection:
+        print("No object selected!")
+        return
+
+    selected_object = selection[0]  # Get the first selected object
+
+    # Check if the selected object is a curve
+    if not hasattr(selected_object, "Shape"):
+        print("Selected object is not a valid curve!")
+        return
+
+    # Get the curve length
+    length = get_curve_length(selected_object)
+    if length is None:
+        print("Failed to calculate curve length!")
+        return
+
+    # Get the internal name from the curve's Label2
+    label2 = selected_object.Label2
+    if not label2:
+        print("Selected curve does not have a Label2!")
+        return
+
+    # Write the length to the table
+    write_length_to_table(label2, length)
+
+
+def refresh_curve():
+    """Refresh only the connected points of the selected curve based on the data in the spreadsheet."""
+    doc = App.ActiveDocument
+    if not doc:
+        print("No active document!")
+        return
+
+    # Get the selected object from the 3D view
+    selection = Gui.Selection.getSelection()
+    if not selection:
+        print("No object selected!")
+        return
+
+    selected_object = selection[0]  # Get the first selected object
+
+    # Check if the selected object is a curve
+    if not hasattr(selected_object, "Label2"):
+        print("Selected object does not have a Label2!")
+        return
+
+    # Get the internal name from the curve's Label2
+    label2 = selected_object.Label2
+    if not label2:
+        print("Selected curve does not have a Label2!")
+        return
+
+    # Extract sheet name and row from Label2
+    try:
+        sheet_name, row, unique_code = label2.split(":")
+        row = int(row)  # Convert row to integer
+    except Exception as e:
+        print(f"Error: Failed to parse Label2 value '{label2}': {e}")
+        return
+
+    # Find the spreadsheet object
+    sheet = doc.getObject(sheet_name)
+    if not sheet or not hasattr(sheet, "getContents"):
+        print(f"Error: Spreadsheet '{sheet_name}' not found or invalid.")
+        return
+
+    # Get values from the spreadsheet
+    values = []
+    for i in range(7):
+        column_letter = chr(ord('A') + i)  # Column letter (e.g., A, B, C, ..., G)
+        cell = f"{column_letter}{row}"  # Form the cell address (e.g., A2, B2, ..., G2)
+
+        if sheet.getContents(cell):
+            value = sheet.get(cell)
+            if isinstance(value, str):
+                value = value.strip()  # Remove whitespace
+                if value.startswith("'"):
+                    value = value[1:]  # Remove single quotes
+            values.append(value)
+        else:
+            print(f"Warning: Cell {cell} is empty or does not exist.")
+            values.append("")  # If the cell is empty, assign an empty value
+
+    # Update the curve based on the values
+    body1_label = str(values[1])
+    sketch1_label = str(values[2])
+    body2_label = str(values[3])
+    sketch2_label = str(values[4])
+
+    body1 = find_object_by_label(doc, body1_label)
+    sketch1 = find_object_by_label(body1, sketch1_label)
+    body2 = find_object_by_label(doc, body2_label)
+    sketch2 = find_object_by_label(body2, sketch2_label)
+
+    if not body1 or not sketch1 or not body2 or not sketch2:
+        print("Error: One or more objects not found!")
+        return
+
+    # Update only the connected points of the curve
+    update_bezier(body1, sketch1, body2, sketch2, selected_object)
+    print("Connected points of the curve refreshed successfully!")
+
+def add_buttons():
+    """Add buttons to the FreeCAD UI with FreeCAD icons and tooltips."""
+    main_window = Gui.getMainWindow()
+    toolbar = main_window.findChild(QtWidgets.QToolBar, "QetWireManager")
+
+    if not toolbar:
+        toolbar = QtWidgets.QToolBar("QetWireManager")
+        main_window.addToolBar(toolbar)
+
+    def add_button_if_not_exists(toolbar, text, tooltip, icon_name, callback):
+        """Add a button with an integrated FreeCAD icon and tooltip if it does not already exist."""
+        for i in range(toolbar.layout().count()):
+            widget = toolbar.layout().itemAt(i).widget()
+            if isinstance(widget, QtWidgets.QPushButton) and widget.text() == text:
+                return  # Button already exists
+
+        button = QtWidgets.QPushButton()
+        button.setText(text)
+        button.setToolTip(tooltip)  # Add tooltip
+
+        # Try to load the FreeCAD icon
+        icon = Gui.getIcon(icon_name)
+        if not icon.isNull():
+            button.setIcon(icon)
+        else:
+            print(f"Icon '{icon_name}' not found!")
+
+        button.clicked.connect(callback)
+        toolbar.addWidget(button)
+
+    # Add buttons with FreeCAD icons and tooltips
+    add_button_if_not_exists(toolbar, "Import wires from Qet File", "Import wires from a QET file", "Std_Import", import_wires_from_qet)
+    add_button_if_not_exists(toolbar, "Create Wire Curve", "Create a Bézier curve", "Draft_BSpline", create_bezier_curve)
+    add_button_if_not_exists(toolbar, "Add Control Node", "Add a new control node", "Draft_AddPoint", add_control_node)
+    add_button_if_not_exists(toolbar, "Refresh Curve", "Refresh the selected curve", "view-refresh", refresh_curve)
+    add_button_if_not_exists(toolbar, "Calculate Curve Length", "Calculate curve length", "BIM_DimensionHorizontal", calculate_and_write_length)
+
+
+    print("Buttons added to toolbar.")
+
+
+# Add buttons when the script is run
+add_buttons()
