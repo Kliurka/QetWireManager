@@ -85,44 +85,107 @@ def import_wires_from_qet():
     spreadsheet.set("I1", "Unique Code")
     spreadsheet.set("J1", "Cable")
 
-    # Write the data to the spreadsheet
-    for row, conductor in enumerate(conductors, start=2):
+    # Dictionary to store wire connections (for "Going arrow" and "Coming arrow")
+    wire_connections = {}
+
+    # List to store regular wire connections (without arrows)
+    regular_wires = []
+
+    # Process conductors
+    for conductor in conductors:
         wire_id = conductor.get("num", "")
+        element1_name = conductor.get("element1_name", "")
+        element2_name = conductor.get("element2_name", "")
+        conductor_color = conductor.get("conductor_color", "")
+        conductor_section = conductor.get("conductor_section", "")
 
-        # Check if 'element1_linked' exists and is not empty
-        element1_linked = conductor.get("element1_linked", "")
-        if element1_linked:
-            from_ref = element1_linked
-        else:
-            from_ref = conductor.get("element1_label", "")
+        # Initialize wire connection if not already present
+        if wire_id not in wire_connections:
+            wire_connections[wire_id] = {
+                "color": conductor_color,
+                "section": conductor_section,
+                "from_ref": None,
+                "from_pin": None,
+                "to_ref": None,
+                "to_pin": None,
+            }
 
-        from_pin = conductor.get("terminalname1", "")
+        # Check if the conductor is connected to a "Going arrow"
+        if element1_name == "Going arrow":
+            wire_connections[wire_id]["from_ref"] = conductor.get("element2_label", "")
+            wire_connections[wire_id]["from_pin"] = conductor.get("terminalname2", "")
+        elif element2_name == "Going arrow":
+            wire_connections[wire_id]["from_ref"] = conductor.get("element1_label", "")
+            wire_connections[wire_id]["from_pin"] = conductor.get("terminalname1", "")
 
-        # Check if 'element2_linked' exists and is not empty
-        element2_linked = conductor.get("element2_linked", "")
-        if element2_linked:
-            to_ref = element2_linked
-        else:
-            to_ref = conductor.get("element2_label", "")
+        # Check if the conductor is connected to a "Coming arrow"
+        if element1_name == "Coming arrow":
+            wire_connections[wire_id]["to_ref"] = conductor.get("element2_label", "")
+            wire_connections[wire_id]["to_pin"] = conductor.get("terminalname2", "")
+        elif element2_name == "Coming arrow":
+            wire_connections[wire_id]["to_ref"] = conductor.get("element1_label", "")
+            wire_connections[wire_id]["to_pin"] = conductor.get("terminalname1", "")
 
-        to_pin = conductor.get("terminalname2", "")
-        area = conductor.get("conductor_section", "")
-        color = conductor.get("conductor_color", "")
+        # Handle regular wires (without arrows)
+        if element1_name != "Going arrow" and element1_name != "Coming arrow" and element2_name != "Going arrow" and element2_name != "Coming arrow":
+            # Check if 'element1_linked' exists and is not empty
+            element1_linked = conductor.get("element1_linked", "")
+            if element1_linked:
+                from_ref = element1_linked
+            else:
+                from_ref = conductor.get("element1_label", "")
 
-        spreadsheet.set(f"A{row}", wire_id)
-        spreadsheet.set(f"B{row}", from_ref)
-        spreadsheet.set(f"C{row}", from_pin)
-        spreadsheet.set(f"D{row}", to_ref)
-        spreadsheet.set(f"E{row}", to_pin)
-        spreadsheet.set(f"F{row}", area)
-        spreadsheet.set(f"G{row}", color)
+            from_pin = conductor.get("terminalname1", "")
+
+            # Check if 'element2_linked' exists and is not empty
+            element2_linked = conductor.get("element2_linked", "")
+            if element2_linked:
+                to_ref = element2_linked
+            else:
+                to_ref = conductor.get("element2_label", "")
+
+            to_pin = conductor.get("terminalname2", "")
+
+            # Add the regular wire to the list
+            regular_wires.append({
+                "wire_id": wire_id,
+                "from_ref": from_ref,
+                "from_pin": from_pin,
+                "to_ref": to_ref,
+                "to_pin": to_pin,
+                "section": conductor_section,
+                "color": conductor_color,
+            })
+
+    # Write the data to the spreadsheet
+    row = 2
+
+    # Write regular wires
+    for wire in regular_wires:
+        spreadsheet.set(f"A{row}", wire["wire_id"])
+        spreadsheet.set(f"B{row}", wire["from_ref"])
+        spreadsheet.set(f"C{row}", wire["from_pin"])
+        spreadsheet.set(f"D{row}", wire["to_ref"])
+        spreadsheet.set(f"E{row}", wire["to_pin"])
+        spreadsheet.set(f"F{row}", wire["section"])
+        spreadsheet.set(f"G{row}", wire["color"])
+        row += 1
+
+    # Write wires connected with arrows
+    for wire_id, connection in wire_connections.items():
+        if connection["from_ref"] and connection["to_ref"]:
+            spreadsheet.set(f"A{row}", wire_id)
+            spreadsheet.set(f"B{row}", connection["from_ref"])
+            spreadsheet.set(f"C{row}", connection["from_pin"])
+            spreadsheet.set(f"D{row}", connection["to_ref"])
+            spreadsheet.set(f"E{row}", connection["to_pin"])
+            spreadsheet.set(f"F{row}", connection["section"])
+            spreadsheet.set(f"G{row}", connection["color"])
+            row += 1
 
     # Recompute the document to show the result
     doc.recompute()
     print(f"Spreadsheet created from QET file: {input_file}")
-
-
-
 
 def check_duplicate_labels():
     """
